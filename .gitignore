@@ -1,0 +1,66 @@
+# Build directories
+build/
+build*/
+cmake-build-*/
+out/
+bin/
+obj/
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+
+# C/C++ compiler outputs
+*.out
+*.app
+*.gcda
+*.gcno
+*.pcap
+
+# CMake / IDE generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+.idea/
+.vscode/
+*.code-workspace
+
+# Python caches (if any scripts are used)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OpenCV / data / large generated outputs
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tif
+*.tiff
+*.avi
+*.mp4
+*.mov
+*.log
+*.csv
+
+# Local runtime files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Project-specific generated artifacts
+reconstruct_output/
+frames/
+results/
+output/
