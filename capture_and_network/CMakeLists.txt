@@ -30,7 +30,9 @@ add_library(lan_video_core
     src/capture/CameraCapture.cpp
     src/network/TcpClient.cpp
     src/network/RawFrameSender.cpp
+    src/network/ResumeSession.cpp
     src/protocol/RawFrameProtocol.cpp
+    src/storage/SenderSpool.cpp
     src/app/CameraNetworkSender.cpp
 )
 set(LAN_VIDEO_INCLUDE_DIRS
@@ -39,6 +41,7 @@ set(LAN_VIDEO_INCLUDE_DIRS
     ${PROJECT_SOURCE_DIR}/include/network
     ${PROJECT_SOURCE_DIR}/include/protocol
     ${PROJECT_SOURCE_DIR}/include/app
+    ${PROJECT_SOURCE_DIR}/include/storage
 )
 
 target_include_directories(lan_video_core
@@ -110,6 +113,73 @@ target_include_directories(test_camera
 )
 
 target_link_libraries(test_camera
+    PRIVATE
+        lan_video_core
+)
+
+add_executable(test_sender_spool_resume
+    tests/test_sender_spool_resume.cpp
+)
+
+target_include_directories(test_sender_spool_resume
+    PRIVATE
+        ${LAN_VIDEO_INCLUDE_DIRS}
+        ${PROJECT_SOURCE_DIR}/include/storage
+        ${PROJECT_SOURCE_DIR}/include/network
+)
+
+target_link_libraries(test_sender_spool_resume
+    PRIVATE
+        lan_video_core
+)
+
+add_executable(test_reliable_resume
+    tests/test_reliable_resume.cpp
+)
+
+target_include_directories(test_reliable_resume
+    PRIVATE
+        ${LAN_VIDEO_INCLUDE_DIRS}
+        ${PROJECT_SOURCE_DIR}/include/storage
+        ${PROJECT_SOURCE_DIR}/include/network
+        ${PROJECT_SOURCE_DIR}/include/protocol
+)
+
+target_link_libraries(test_reliable_resume
+    PRIVATE
+        lan_video_core
+)
+
+add_executable(test_phase5_checkpoint
+    tests/test_phase5_checkpoint.cpp
+)
+
+target_include_directories(test_phase5_checkpoint
+    PRIVATE
+        ${LAN_VIDEO_INCLUDE_DIRS}
+        ${PROJECT_SOURCE_DIR}/include/storage
+        ${PROJECT_SOURCE_DIR}/include/network
+        ${PROJECT_SOURCE_DIR}/include/protocol
+)
+
+target_link_libraries(test_phase5_checkpoint
+    PRIVATE
+        lan_video_core
+)
+
+add_executable(test_processing_resume
+    tests/test_processing_resume.cpp
+)
+
+target_include_directories(test_processing_resume
+    PRIVATE
+        ${LAN_VIDEO_INCLUDE_DIRS}
+        ${PROJECT_SOURCE_DIR}/include/storage
+        ${PROJECT_SOURCE_DIR}/include/network
+        ${PROJECT_SOURCE_DIR}/include/protocol
+)
+
+target_link_libraries(test_processing_resume
     PRIVATE
         lan_video_core
 )

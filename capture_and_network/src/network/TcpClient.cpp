@@ -1,5 +1,6 @@
 #include "TcpClient.h"
 
+#include <algorithm>
 #include <iostream>
 #include <cstring>
 
@@ -11,7 +12,9 @@ TcpClient::TcpClient(const std::string& ip, int port)
     : ip_(ip),
       port_(port),
       socketFd_(-1),
-      connected_(false) {}
+      connected_(false),
+      sendTimeoutSeconds_(10),
+      recvTimeoutSeconds_(10) {}
 
 TcpClient::~TcpClient() {
     closeConnection();
@@ -28,6 +31,16 @@ bool TcpClient::connectToServer() {
         std::cerr << "[TcpClient] 创建 socket 失败" << std::endl;
         return false;
     }
+
+    timeval sendTimeout{};
+    sendTimeout.tv_sec = sendTimeoutSeconds_;
+    sendTimeout.tv_usec = 0;
+    setsockopt(socketFd_, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, sizeof(sendTimeout));
+
+    timeval recvTimeout{};
+    recvTimeout.tv_sec = recvTimeoutSeconds_;
+    recvTimeout.tv_usec = 0;
+    setsockopt(socketFd_, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout));
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
@@ -88,4 +101,35 @@ bool TcpClient::sendAll(const void* data, size_t size) {
     }
 
     return true;
+}
+
+bool TcpClient::recvAll(void* data, size_t size) {
+    if (!connected_) {
+        return false;
+    }
+
+    uint8_t* buffer = static_cast<uint8_t*>(data);
+    size_t receivedBytes = 0;
+
+    while (receivedBytes < size) {
+        ssize_t n = recv(socketFd_, buffer + receivedBytes, size - receivedBytes, 0);
+
+        if (n <= 0) {
+            std::cerr << "[TcpClient] recv 失败或连接已断开" << std::endl;
+            closeConnection();
+            return false;
+        }
+
+        receivedBytes += static_cast<size_t>(n);
+    }
+
+    return true;
+}
+
+void TcpClient::setSendTimeout(int seconds) {
+    sendTimeoutSeconds_ = std::max(1, seconds);
+}
+
+void TcpClient::setRecvTimeout(int seconds) {
+    recvTimeoutSeconds_ = std::max(1, seconds);
 }

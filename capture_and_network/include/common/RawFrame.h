@@ -17,7 +17,7 @@ struct RawFrame {
 
     uint64_t totalBytes;
 
-    std::shared_ptr<uint16_t[]> buffer;
+    std::shared_ptr<uint8_t[]> buffer;
 
     std::chrono::steady_clock::time_point timestamp;
 
@@ -28,6 +28,7 @@ struct RawFrame {
           type(0),
           elemSize(0),
           totalBytes(0),
+          buffer(nullptr),
           timestamp(std::chrono::steady_clock::now()) {}
 
     RawFrame(
@@ -53,6 +54,10 @@ struct RawFrame {
     }
 
     const uint8_t* data() const {
+        return buffer.get();
+    }
+
+    uint8_t* data() {
         return buffer.get();
     }
 };
