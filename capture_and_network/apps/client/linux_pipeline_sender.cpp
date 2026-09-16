@@ -1,12 +1,17 @@
 #include "V2Transfer.h"
+#include "PipelineConfig.h"
 
 #include <opencv2/opencv.hpp>
 
 #include <chrono>
 #include <algorithm>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <exception>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <stdexcept>
@@ -44,65 +49,121 @@ cv::Mat syntheticFrame(int width, int height, const ScanPosition& position) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 6) {
-        std::cerr << "usage: linux_pipeline_sender <host> <port> <spool-dir> <scan.csv> <camera-index|-1> [width height fps]\n";
-        return 2;
-    }
     try {
-        const std::string host = argv[1];
-        const uint16_t port = static_cast<uint16_t>(std::stoi(argv[2]));
-        const std::string spool = argv[3];
-        const auto positions = readScan(argv[4]);
-        const int cameraIndex = std::stoi(argv[5]);
-        const int width = argc > 6 ? std::stoi(argv[6]) : 640;
-        const int height = argc > 7 ? std::stoi(argv[7]) : 480;
-        const int fps = argc > 8 ? std::stoi(argv[8]) : 10;
+        pipelineconfig::SenderConfig config;
+        if (argc == 1 || (argc == 3 && std::string(argv[1]) == "--config")) {
+            const auto path = pipelineconfig::discoverConfigPath(
+                argc, argv, "PICTURE_RECONSTRUCT_SENDER_CONFIG", "config/sender.json");
+            config = pipelineconfig::loadSenderConfig(path);
+        } else {
+            if (argc < 6) {
+                std::cerr << "usage: linux_pipeline_sender [--config path] | <host> <port> <spool-dir> <scan.csv> <camera-index|-1> [width height fps]\n";
+                return 2;
+            }
+            config.host = argv[1]; config.port = static_cast<uint16_t>(std::stoi(argv[2]));
+            config.spoolDirectory = argv[3]; config.scanCsv = argv[4]; config.cameraIndex = std::stoi(argv[5]);
+            config.captureMode = config.cameraIndex >= 0 ? "v4l2" : "synthetic";
+            config.width = argc > 6 ? std::stoi(argv[6]) : 640;
+            config.height = argc > 7 ? std::stoi(argv[7]) : 480;
+            config.fps = argc > 8 ? std::stoi(argv[8]) : 10;
+        }
+        const auto positions = readScan(config.scanCsv.string());
 
         cv::VideoCapture camera;
-        if (cameraIndex >= 0) {
-            camera.open(cameraIndex, cv::CAP_V4L2);
-            if (!camera.isOpened()) throw std::runtime_error("cannot open V4L2 camera index " + std::to_string(cameraIndex));
-            camera.set(cv::CAP_PROP_FRAME_WIDTH, width);
-            camera.set(cv::CAP_PROP_FRAME_HEIGHT, height);
-            camera.set(cv::CAP_PROP_FPS, fps);
+        if (config.captureMode == "v4l2") {
+            camera.open(config.cameraIndex, cv::CAP_V4L2);
+            if (!camera.isOpened()) throw std::runtime_error("cannot open V4L2 camera index " + std::to_string(config.cameraIndex));
+            camera.set(cv::CAP_PROP_FRAME_WIDTH, config.width);
+            camera.set(cv::CAP_PROP_FRAME_HEIGHT, config.height);
+            camera.set(cv::CAP_PROP_FPS, config.fps);
             cv::Mat warmup;
-            for (int i = 0; i < 5; ++i) camera.read(warmup);
+            for (int i = 0; i < config.warmupFrames; ++i) camera.read(warmup);
         }
 
-        // Sender 内部会把所有帧先写入 spool，再开始网络发送。
-        v2transfer::Sender sender(host, port, spool, 1);
+        v2transfer::Sender sender(config.host, config.port, config.spoolDirectory, config.taskId, config.transfer);
         if (!sender.resume()) throw std::runtime_error("initial resume failed: " + sender.lastError());
         const uint64_t firstSeq = sender.nextFrameSeq();
-        for (size_t index = static_cast<size_t>(firstSeq - 1); index < positions.size(); ++index) {
-            cv::Mat image;
-            // cameraIndex >= 0 使用 V4L2；-1 使用可复现的合成图像。
-            if (cameraIndex >= 0) {
-                if (!camera.read(image) || image.empty()) throw std::runtime_error("camera returned an empty frame");
-            } else {
-                image = syntheticFrame(width, height, positions[index]);
+        std::mutex captureMutex;
+        std::condition_variable captureCv;
+        std::deque<v2transfer::Frame> captured;
+        uint64_t capturedBytes = 0;
+        bool captureDone = false;
+        bool captureCancelled = false;
+        std::exception_ptr captureError;
+
+        std::thread captureThread([&] {
+            try {
+                for (size_t index = static_cast<size_t>(firstSeq - 1); index < positions.size(); ++index) {
+                    cv::Mat image;
+                    if (config.captureMode == "v4l2") {
+                        if (!camera.read(image) || image.empty()) throw std::runtime_error("camera returned an empty frame");
+                    } else {
+                        image = syntheticFrame(config.width, config.height, positions[index]);
+                    }
+                    if (!image.isContinuous()) image = image.clone();
+                    v2transfer::Frame frame;
+                    frame.taskId = config.taskId;
+                    frame.lineId = 0;
+                    frame.attemptId = 1;
+                    frame.frameIndex = positions[index].frameIndex;
+                    frame.frameSeq = index + 1;
+                    frame.stageX = positions[index].x;
+                    frame.stageY = positions[index].y;
+                    frame.rows = static_cast<uint32_t>(image.rows);
+                    frame.cols = static_cast<uint32_t>(image.cols);
+                    frame.pixelType = static_cast<uint32_t>(image.type());
+                    frame.elemSize = static_cast<uint32_t>(image.elemSize());
+                    const size_t bytes = image.total() * image.elemSize();
+                    frame.pixels.assign(image.data, image.data + bytes);
+
+                    std::unique_lock<std::mutex> lock(captureMutex);
+                    captureCv.wait(lock, [&] {
+                        return captureCancelled || capturedBytes == 0 ||
+                               capturedBytes + frame.pixels.size() <= config.transfer.maxQueuedBytes;
+                    });
+                    if (captureCancelled) break;
+                    capturedBytes += frame.pixels.size();
+                    captured.push_back(std::move(frame));
+                    lock.unlock();
+                    captureCv.notify_all();
+                    if (config.fps > 0 && config.captureMode == "synthetic")
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1000 / config.fps));
+                }
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(captureMutex);
+                captureError = std::current_exception();
             }
-            if (!image.isContinuous()) image = image.clone();
+            { std::lock_guard<std::mutex> lock(captureMutex); captureDone = true; }
+            captureCv.notify_all();
+        });
+
+        bool submitOk = true;
+        while (true) {
             v2transfer::Frame frame;
-            frame.taskId = 1;
-            frame.lineId = 0;
-            frame.attemptId = 1;
-            frame.frameIndex = positions[index].frameIndex;
-            frame.frameSeq = index + 1;
-            frame.stageX = positions[index].x;
-            frame.stageY = positions[index].y;
-            frame.rows = static_cast<uint32_t>(image.rows);
-            frame.cols = static_cast<uint32_t>(image.cols);
-            frame.pixelType = static_cast<uint32_t>(image.type());
-            frame.elemSize = static_cast<uint32_t>(image.elemSize());
-            const size_t bytes = image.total() * image.elemSize();
-            frame.pixels.assign(image.data, image.data + bytes);
-            // send 返回成功表示 receiver 已持久化并 ACK 了这一帧。
-            if (!sender.send(frame)) throw std::runtime_error("frame send failed: " + sender.lastError());
-            std::cout << "ACK frame=" << frame.frameSeq << " stage=(" << frame.stageX << ',' << frame.stageY << ")\n";
-            if (fps > 0 && cameraIndex < 0) std::this_thread::sleep_for(std::chrono::milliseconds(1000 / fps));
+            {
+                std::unique_lock<std::mutex> lock(captureMutex);
+                captureCv.wait(lock, [&] { return captureDone || !captured.empty(); });
+                if (captured.empty()) break;
+                frame = std::move(captured.front());
+                captured.pop_front();
+                capturedBytes -= frame.pixels.size();
+            }
+            captureCv.notify_all();
+            if (!sender.submit(frame)) {
+                submitOk = false;
+                { std::lock_guard<std::mutex> lock(captureMutex); captureCancelled = true; }
+                captureCv.notify_all();
+                break;
+            }
+            std::cout << "spooled frame=" << frame.frameSeq << " stage=(" << frame.stageX << ',' << frame.stageY << ")\n";
         }
+        captureThread.join();
+        if (captureError) std::rethrow_exception(captureError);
+        if (!submitOk) throw std::runtime_error("frame submit failed: " + sender.lastError());
         if (!sender.finish()) throw std::runtime_error("task finish failed: " + sender.lastError());
-        std::cout << "task finished\n";
+        const auto stats = sender.stats();
+        std::cout << "task finished frames=" << stats.frames << " bytes=" << stats.bytes
+                  << " connections=" << stats.connections << " reconnects=" << stats.reconnects << '\n';
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -1,4 +1,5 @@
 #include "V2Transfer.h"
+#include "PipelineConfig.h"
 
 #include <opencv2/opencv.hpp>
 
@@ -12,11 +13,30 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include <cstdio>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 namespace fs = std::filesystem;
 struct Spot { int id; cv::Point2f center; cv::Point2f offset; float radius; float gain; };
 struct Signal { uint64_t frame; int spot; double x; double y; double value; };
+
+bool syncFile(const fs::path& path) {
+#ifdef _WIN32
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, path.c_str(), L"rb") != 0) return false;
+    const bool ok = _commit(_fileno(file)) == 0;
+#else
+    FILE* file = fopen(path.c_str(), "rb");
+    if (!file) return false;
+    const bool ok = fsync(fileno(file)) == 0;
+#endif
+    return fclose(file) == 0 && ok;
+}
 
 std::vector<Spot> readSpots(const std::string& path) {
     std::ifstream input(path);
@@ -97,13 +117,34 @@ public:
         cv::Mat normalized, weight16;
         cv::normalize(reconstruction, normalized, 0, 65535, cv::NORM_MINMAX, CV_16UC1);
         cv::normalize(weight_, weight16, 0, 65535, cv::NORM_MINMAX, CV_16UC1);
-        if (!cv::imwrite((output_ / "reconstruction.tif").string(), normalized) ||
-            !cv::imwrite((output_ / "weight_map.tif").string(), weight16))
+        const fs::path reconstructionTmp = output_ / "reconstruction.part.tif";
+        const fs::path weightTmp = output_ / "weight_map.part.tif";
+        const fs::path csvTmp = output_ / "spot_signals.part.csv";
+        if (!cv::imwrite(reconstructionTmp.string(), normalized) || !cv::imwrite(weightTmp.string(), weight16))
             throw std::runtime_error("cannot write reconstruction images");
-        std::ofstream csv(output_ / "spot_signals.csv");
+        std::ofstream csv(csvTmp);
         csv << "frame_seq,spot_id,sample_x,sample_y,intensity\n";
         for (const auto& signal : signals_)
             csv << signal.frame << ',' << signal.spot << ',' << signal.x << ',' << signal.y << ',' << signal.value << '\n';
+        csv.flush();
+        if (!csv) throw std::runtime_error("cannot write spot signal CSV");
+        csv.close();
+        if (!syncFile(reconstructionTmp) || !syncFile(weightTmp) || !syncFile(csvTmp))
+            throw std::runtime_error("cannot make reconstruction outputs durable");
+        auto publish = [](const fs::path& temporary, const fs::path& final) {
+            std::error_code ec;
+            fs::rename(temporary, final, ec);
+#ifdef _WIN32
+            if (ec) {
+                ec.clear(); fs::remove(final, ec); ec.clear();
+                fs::rename(temporary, final, ec);
+            }
+#endif
+            if (ec) throw std::runtime_error("cannot publish output: " + final.string());
+        };
+        publish(reconstructionTmp, output_ / "reconstruction.tif");
+        publish(weightTmp, output_ / "weight_map.tif");
+        publish(csvTmp, output_ / "spot_signals.csv");
         std::cout << "saved " << seen_.size() << " frames to " << output_ << '\n';
     }
 
@@ -128,29 +169,43 @@ private:
 }
 
 int main(int argc, char** argv) {
-    if (argc < 7) {
-        std::cerr << "usage: linux_reconstruct_receiver <port> <receiver-spool> <spots.csv> <output-dir> <output-width> <output-height>\n";
-        return 2;
-    }
     try {
-        const uint16_t port = static_cast<uint16_t>(std::stoi(argv[1]));
-        const fs::path spool = argv[2];
-        Reconstructor reconstructor(readSpots(argv[3]), std::stoi(argv[5]), std::stoi(argv[6]), argv[4]);
+        pipelineconfig::ReceiverConfig config;
+        if (argc == 1 || (argc == 3 && std::string(argv[1]) == "--config")) {
+            const auto path = pipelineconfig::discoverConfigPath(
+                argc, argv, "PICTURE_RECONSTRUCT_RECEIVER_CONFIG", "config/receiver.json");
+            config = pipelineconfig::loadReceiverConfig(path);
+        } else {
+            if (argc < 7) {
+                std::cerr << "usage: linux_reconstruct_receiver [--config path] | <port> <receiver-spool> <spots.csv> <output-dir> <output-width> <output-height>\n";
+                return 2;
+            }
+            config.port = static_cast<uint16_t>(std::stoi(argv[1])); config.spoolDirectory = argv[2];
+            config.spotsCsv = argv[3]; config.outputDirectory = argv[4];
+            config.outputWidth = std::stoi(argv[5]); config.outputHeight = std::stoi(argv[6]);
+            config.transfer.expectedTaskId = config.taskId;
+        }
+        Reconstructor reconstructor(readSpots(config.spotsCsv.string()), config.outputWidth, config.outputHeight, config.outputDirectory);
         // 先重放 receiver spool 中已有的完整帧，支持 receiver 重启后继续出图。
-        const fs::path taskDir = spool / "1";
+        const fs::path taskDir = config.spoolDirectory / std::to_string(config.taskId);
         std::error_code ec;
-        if (fs::exists(taskDir, ec)) for (const auto& entry : fs::directory_iterator(taskDir)) {
-            if (entry.path().extension() != ".frame") continue;
+        std::vector<fs::path> savedPaths;
+        if (fs::exists(taskDir, ec)) for (const auto& entry : fs::directory_iterator(taskDir))
+            if (entry.path().extension() == ".frame") savedPaths.push_back(entry.path());
+        std::sort(savedPaths.begin(), savedPaths.end(), [](const fs::path& a, const fs::path& b) {
+            return std::stoull(a.stem().string()) < std::stoull(b.stem().string());
+        });
+        for (const auto& path : savedPaths) {
             v2transfer::Frame saved;
-            if (!v2transfer::loadFrame(entry.path(), saved)) throw std::runtime_error("corrupt receiver spool: " + entry.path().string());
+            if (!v2transfer::loadFrame(path, saved)) throw std::runtime_error("corrupt receiver spool: " + path.string());
             reconstructor.consume(saved);
         }
         // Receiver 负责协议、校验、持久化；本程序只提供重构回调。
-        v2transfer::Receiver receiver(port, spool);
+        v2transfer::Receiver receiver(config.port, config.spoolDirectory, config.transfer);
         receiver.setFrameHandler([&](const v2transfer::Frame& frame) { reconstructor.consume(frame); });
         // TaskFinish 到达后写出最终 TIFF 和 spot 信号 CSV。
         receiver.setFinishHandler([&](uint64_t) { reconstructor.save(); });
-        std::cout << "waiting for Protocol V2 sender on port " << port << '\n';
+        std::cout << "waiting for Protocol V2 sender on port " << config.port << '\n';
         if (!receiver.serveUntilFinished()) throw std::runtime_error("receiver stopped before TaskFinish: " + receiver.lastError());
         return 0;
     } catch (const std::exception& error) {

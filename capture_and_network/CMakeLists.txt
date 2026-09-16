@@ -32,13 +32,25 @@ else()
     target_compile_options(v2_transfer PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(pipeline_config src/config/PipelineConfig.cpp)
+target_include_directories(pipeline_config PUBLIC
+    ${PROJECT_SOURCE_DIR}/include/config
+    ${PROJECT_SOURCE_DIR}/third_party
+)
+target_link_libraries(pipeline_config PUBLIC v2_transfer)
+if(MSVC)
+    target_compile_options(pipeline_config PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(pipeline_config PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(linux_pipeline_sender apps/client/linux_pipeline_sender.cpp)
 target_include_directories(linux_pipeline_sender PRIVATE ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(linux_pipeline_sender PRIVATE v2_transfer ${OpenCV_LIBS})
+target_link_libraries(linux_pipeline_sender PRIVATE v2_transfer pipeline_config ${OpenCV_LIBS})
 
 add_executable(linux_reconstruct_receiver apps/server/linux_reconstruct_receiver.cpp)
 target_include_directories(linux_reconstruct_receiver PRIVATE ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(linux_reconstruct_receiver PRIVATE v2_transfer ${OpenCV_LIBS})
+target_link_libraries(linux_reconstruct_receiver PRIVATE v2_transfer pipeline_config ${OpenCV_LIBS})
 
 add_executable(v2_receiver apps/server/v2_receiver.cpp)
 target_link_libraries(v2_receiver PRIVATE v2_transfer)
@@ -49,6 +61,15 @@ target_link_libraries(v2_sender PRIVATE v2_transfer)
 add_executable(test_v2_end_to_end tests/test_v2_end_to_end.cpp)
 target_link_libraries(test_v2_end_to_end PRIVATE v2_transfer)
 add_test(NAME v2_end_to_end COMMAND test_v2_end_to_end)
+add_executable(test_v2_pipeline tests/test_v2_pipeline.cpp)
+target_link_libraries(test_v2_pipeline PRIVATE v2_transfer)
+add_test(NAME v2_pipeline COMMAND test_v2_pipeline)
+add_executable(benchmark_v2_transfer tests/benchmark_v2_transfer.cpp)
+target_link_libraries(benchmark_v2_transfer PRIVATE v2_transfer)
+
+add_executable(test_pipeline_config tests/test_pipeline_config.cpp)
+target_link_libraries(test_pipeline_config PRIVATE pipeline_config)
+add_test(NAME pipeline_config COMMAND test_pipeline_config)
 
 option(BUILD_LEGACY_COMPONENTS "Build the pre-V2 camera, protocol, and regression targets" OFF)
 if(BUILD_LEGACY_COMPONENTS)

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "task_id": 1,
+  "network": {
+    "port": 19090
+  },
+  "spool": {
+    "directory": "../linux_e2e/runtime/receiver_spool",
+    "max_size_gib": 20,
+    "cleanup_after_success": true
+  },
+  "pipeline": {
+    "max_queue_mib": 64
+  },
+  "reconstruction": {
+    "spots_csv": "../linux_e2e/spots_example.csv",
+    "output_directory": "../linux_e2e/runtime/output",
+    "output_width": 256,
+    "output_height": 256
+  }
+}

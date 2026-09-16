@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "task_id": 2,
+  "network": {
+    "host": "192.168.1.100",
+    "port": 19090,
+    "reconnect_delay_ms": 150
+  },
+  "capture": {
+    "mode": "v4l2",
+    "camera_index": 0,
+    "width": 1024,
+    "height": 1024,
+    "fps": 10,
+    "warmup_frames": 5,
+    "scan_csv": "../linux_e2e/scan_example.csv"
+  },
+  "spool": {
+    "directory": "../runtime/sender_spool",
+    "max_size_gib": 20
+  },
+  "pipeline": {
+    "max_in_flight_frames": 4,
+    "max_queue_mib": 64
+  }
+}
