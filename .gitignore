@@ -49,6 +49,8 @@ __pycache__/
 *.mov
 *.log
 *.csv
+!capture_and_network/linux_e2e/scan_example.csv
+!capture_and_network/linux_e2e/spots_example.csv
 
 # Local runtime files
 *.tmp
