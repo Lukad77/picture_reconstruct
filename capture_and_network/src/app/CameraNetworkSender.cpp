@@ -60,6 +60,7 @@ void CameraNetworkSender::stop() {
 
     camera_.stop();
     queue_.stop();
+    frameSender_.stop();
 
     if (senderThread_.joinable()) {
         senderThread_.join();
@@ -81,8 +82,8 @@ void CameraNetworkSender::sendLoop() {
         auto outgoing = v2transfer::fromRawFrame(frame, 1);
         outgoing.frameSeq = frameSender_.nextFrameSeq();
         outgoing.frameIndex = static_cast<uint32_t>(outgoing.frameSeq - 1);
-        while (running_ && !frameSender_.send(outgoing)) {
-            std::cerr << "[CameraNetworkSender] V2 发送失败，帧已保留在 spool: "
+        while (running_ && !frameSender_.submit(outgoing)) {
+            std::cerr << "[CameraNetworkSender] V2 提交失败，帧保留在本地或等待恢复: "
                       << frameSender_.lastError() << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }

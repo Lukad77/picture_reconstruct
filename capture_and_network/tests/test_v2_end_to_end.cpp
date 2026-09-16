@@ -23,22 +23,30 @@ int main() {
     f.pixels.resize(512 * 512);
     for (size_t i = 0; i < f.pixels.size(); ++i) f.pixels[i] = static_cast<uint8_t>(i & 0xff);
     receiver.dropNextAckForTest();
-    bool ok = sender.send(f, 5) && sender.pendingCount() == 0 && delivered == 1;
+    bool ok = sender.send(f, 5) && sender.pendingCount() == 0;
+    for (int i = 0; i < 100 && delivered.load() < 1; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ok = ok && delivered == 1;
     v2transfer::Frame loaded;
     ok = ok && v2transfer::loadFrame(root / "receiver" / "1" / "1.frame", loaded) &&
          loaded.pixels == f.pixels && loaded.stageX == f.stageX && loaded.stageY == f.stageY;
     f.frameSeq = 2; f.frameIndex = 1; f.pixels[0] = 99;
     receiver.disconnectNextFrameForTest();
-    ok = ok && sender.send(f, 5) && sender.pendingCount() == 0 && delivered == 2;
-    ok = ok && v2transfer::loadFrame(root / "receiver" / "1" / "2.frame", loaded) && loaded.pixels == f.pixels;
-    ok = ok && sender.finish(5);
+    const bool secondSent = sender.send(f, 5);
+    for (int i = 0; i < 100 && delivered.load() < 2; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ok = ok && secondSent && sender.pendingCount() == 0 && delivered == 2;
+    const bool secondLoaded = v2transfer::loadFrame(root / "receiver" / "1" / "2.frame", loaded);
+    ok = ok && secondLoaded && loaded.pixels == f.pixels;
+    receiver.dropNextFinishAckForTest();
+    const bool finishOk = sender.finish(5);
+    ok = ok && finishOk;
     server.join();
-    ok = ok && finished;
+    ok = ok && finished && fs::exists(root / "receiver" / "completed" / "1.done") &&
+         !fs::exists(root / "receiver" / "1");
     fs::remove_all(root);
     if (!ok) {
         std::cerr << "V2 end-to-end failed: " << sender.lastError() << " receiver: " << receiver.lastError() << "\n";
         return 1;
     }
-    std::cout << "V2 durable ACK, lost ACK resume, mid-frame disconnect OK\n";
+    std::cout << "V2 durable ACK, lost ACK resume, mid-frame disconnect and finish replay OK\n";
     return 0;
 }

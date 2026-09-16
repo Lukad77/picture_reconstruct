@@ -1,7 +1,8 @@
 #pragma once
 
-#include <cstdint>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -12,14 +13,14 @@
 
 namespace v2transfer {
 
+constexpr uint64_t kMiB = 1024ULL * 1024ULL;
+constexpr uint64_t kGiB = 1024ULL * 1024ULL * 1024ULL;
+
 struct Frame {
-    // 一个任务内所有帧共享 taskId；receiver 用它隔离 spool 目录。
     uint64_t taskId = 1;
-    // line/attempt 为扫描任务恢复预留的逻辑层级。
     uint32_t lineId = 0;
     uint32_t attemptId = 1;
     uint32_t frameIndex = 0;
-    // frameSeq 是可靠传输序号，也是 spool 文件名的一部分。
     uint64_t frameSeq = 0;
     double stageX = 0.0;
     double stageY = 0.0;
@@ -27,70 +28,91 @@ struct Frame {
     uint32_t cols = 0;
     uint32_t pixelType = 0;
     uint32_t elemSize = 0;
-    // 原始像素，不经过 JPEG/PNG 编解码。
     std::vector<uint8_t> pixels;
+};
+
+struct SenderOptions {
+    size_t maxInFlightFrames = 4;
+    uint64_t maxQueuedBytes = 64 * kMiB;
+    uint64_t maxSpoolBytes = 20 * kGiB;
+    std::chrono::milliseconds reconnectDelay{150};
+};
+
+struct ReceiverOptions {
+    uint64_t expectedTaskId = 0;
+    uint64_t maxQueuedBytes = 64 * kMiB;
+    uint64_t maxSpoolBytes = 20 * kGiB;
+    bool cleanupCompletedTask = true;
+};
+
+struct TransferStats {
+    uint64_t connections = 0;
+    uint64_t reconnects = 0;
+    uint64_t frames = 0;
+    uint64_t bytes = 0;
+    uint64_t peakQueuedBytes = 0;
+};
+
+enum class NackReason : uint32_t {
+    Unspecified = 0,
+    CrcMismatch = 1,
+    StorageFull = 2,
+    ProcessingFailed = 3,
+    ProtocolError = 4
 };
 
 Frame fromRawFrame(const RawFrame& raw, uint64_t taskId = 1);
 
 class Sender {
 public:
-    Sender(std::string host, uint16_t port, std::filesystem::path spoolDir, uint64_t taskId = 1);
+    Sender(std::string host, uint16_t port, std::filesystem::path spoolDir,
+           uint64_t taskId = 1, SenderOptions options = {});
     ~Sender();
     Sender(const Sender&) = delete;
     Sender& operator=(const Sender&) = delete;
-    // 先持久化，再连接、重放 pending 帧并等待对应 ACK。
+
+    bool submit(const Frame& frame);
     bool send(const Frame& frame, unsigned maxAttempts = 5);
-    // Hello + ResumeRequest + pending frame replay。
     bool resume(unsigned maxAttempts = 5);
-    // 所有帧 ACK 后提交任务结束消息。
+    bool flush();
     bool finish(unsigned maxAttempts = 5);
+    void stop();
+
     size_t pendingCount() const;
-    uint64_t nextFrameSeq() const { return nextFrameSeq_; }
-    const std::string& lastError() const { return error_; }
+    uint64_t nextFrameSeq() const;
+    TransferStats stats() const;
+    std::string lastError() const;
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
-    std::filesystem::path spoolDir_;
-    std::string host_;
-    uint16_t port_;
-    uint64_t taskId_;
-    uint64_t nextFrameSeq_ = 1;
-    std::string error_;
-    bool persist(const Frame& frame);
-    bool attemptResume();
 };
 
 class Receiver {
 public:
     using FrameHandler = std::function<void(const Frame&)>;
     using FinishHandler = std::function<void(uint64_t)>;
-    Receiver(uint16_t port, std::filesystem::path spoolDir);
+
+    Receiver(uint16_t port, std::filesystem::path spoolDir, ReceiverOptions options = {});
     ~Receiver();
     Receiver(const Receiver&) = delete;
     Receiver& operator=(const Receiver&) = delete;
-    // 处理一个连接；断开后可再次 accept。
+
     bool serveOne();
     bool serveForever();
-    // 处理连接直到收到合法 TaskFinish。
     bool serveUntilFinished();
     void stop();
     void setFrameHandler(FrameHandler handler);
     void setFinishHandler(FinishHandler handler);
     void dropNextAckForTest();
+    void dropNextFinishAckForTest();
     void disconnectNextFrameForTest();
-    const std::string& lastError() const { return error_; }
+    TransferStats stats() const;
+    std::string lastError() const;
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
-    std::filesystem::path spoolDir_;
-    std::string error_;
-    FrameHandler handler_;
-    FinishHandler finishHandler_;
-    std::atomic<bool> dropAck_{false};
-    std::atomic<bool> disconnectFrame_{false};
     bool handleClient();
 };
 
