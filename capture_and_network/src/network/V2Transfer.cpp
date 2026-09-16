@@ -119,14 +119,20 @@ SocketHandle listenOn(uint16_t port) {
 }
 
 bool read16(const std::vector<uint8_t>& b, size_t& at, uint16_t& v) {
-    if (at + 2 > b.size()) return false; v = (uint16_t(b[at]) << 8) | b[at + 1]; at += 2; return true;
+    if (at + 2 > b.size()) return false;
+    v = (uint16_t(b[at]) << 8) | b[at + 1];
+    at += 2;
+    return true;
 }
 bool read32(const std::vector<uint8_t>& b, size_t& at, uint32_t& v) {
     if (at + 4 > b.size()) return false;
     v = (uint32_t(b[at]) << 24) | (uint32_t(b[at + 1]) << 16) | (uint32_t(b[at + 2]) << 8) | b[at + 3]; at += 4; return true;
 }
 bool read64(const std::vector<uint8_t>& b, size_t& at, uint64_t& v) {
-    if (at + 8 > b.size()) return false; v = 0; for (int i = 0; i < 8; ++i) v = (v << 8) | b[at++]; return true;
+    if (at + 8 > b.size()) return false;
+    v = 0;
+    for (int i = 0; i < 8; ++i) v = (v << 8) | b[at++];
+    return true;
 }
 void appendDouble(std::vector<uint8_t>& b, double v) {
     uint64_t bits = 0; std::memcpy(&bits, &v, sizeof(bits)); protocolv2::appendUint64(b, bits);
@@ -250,7 +256,8 @@ bool writeCompletion(const fs::path& root, uint64_t task, uint64_t seq) {
 Frame fromRawFrame(const RawFrame& raw, uint64_t taskId) {
     Frame f; f.taskId = taskId; f.frameSeq = raw.frameId; f.frameIndex = static_cast<uint32_t>(raw.frameId - 1);
     f.rows = raw.rows; f.cols = raw.cols; f.pixelType = raw.type; f.elemSize = raw.elemSize;
-    if (!raw.empty()) f.pixels.assign(raw.data(), raw.data() + raw.totalBytes); return f;
+    if (!raw.empty()) f.pixels.assign(raw.data(), raw.data() + raw.totalBytes);
+    return f;
 }
 bool loadFrame(const fs::path& path, Frame& f) {
     std::ifstream in(path, std::ios::binary | std::ios::ate); if (!in) return false;
@@ -267,7 +274,10 @@ struct Sender::Impl {
         if (!task || !options.maxInFlightFrames || !options.maxQueuedBytes || options.maxSpoolBytes < kMaxFrameBytes + 80) {
             fatal = true; error = "invalid sender options";
         }
-        for (const auto& path : pendingPaths(spool, task)) nextSeq = std::max(nextSeq, std::stoull(path.stem().string()) + 1);
+        for (const auto& path : pendingPaths(spool, task)) {
+            const uint64_t sequence = static_cast<uint64_t>(std::stoull(path.stem().string()));
+            nextSeq = std::max<uint64_t>(nextSeq, sequence + 1);
+        }
     }
     ~Impl() { stopNow(); }
 
@@ -392,7 +402,8 @@ bool Sender::resume(unsigned maxAttempts) {
     return impl_->connectedOnce;
 }
 bool Sender::send(const Frame& f, unsigned maxAttempts) {
-    if (!submit(f)) return false; if (!resume(maxAttempts)) return false;
+    if (!submit(f)) return false;
+    if (!resume(maxAttempts)) return false;
     std::unique_lock<std::mutex> lock(impl_->mutex); const fs::path path = framePath(impl_->spool, impl_->task, f.frameSeq);
     impl_->cv.wait(lock, [&] { std::error_code ec; return !fs::exists(path, ec) || impl_->fatal || impl_->stopping; });
     std::error_code ec; return !fs::exists(path, ec);
@@ -430,7 +441,8 @@ struct Receiver::Impl {
     void stopNow() {
         { std::lock_guard<std::mutex> lock(mutex); if (stopping) return; stopping = true; }
         client.close(); listener.close(); cv.notify_all(); spaceCv.notify_all();
-        if (persistThread.joinable()) persistThread.join(); if (processThread.joinable()) processThread.join();
+        if (persistThread.joinable()) persistThread.join();
+        if (processThread.joinable()) processThread.join();
     }
     bool sendSafe(MessageType type, const std::vector<uint8_t>& body) { std::lock_guard<std::mutex> lock(sendMutex); return writeMessage(client, type, body); }
     void failConnection(uint64_t task, uint64_t seq, NackReason reason, const std::string& message) {
@@ -441,14 +453,22 @@ struct Receiver::Impl {
     bool enqueue(Frame&& frame) {
         const uint64_t bytes = frame.pixels.size(); std::unique_lock<std::mutex> lock(mutex);
         spaceCv.wait(lock, [&] { return stopping || queuedBytes == 0 || queuedBytes + bytes <= options.maxQueuedBytes; });
-        if (stopping) return false; queuedBytes += bytes; stats.peakQueuedBytes = std::max(stats.peakQueuedBytes, queuedBytes);
+        if (stopping) return false;
+        queuedBytes += bytes;
+        stats.peakQueuedBytes = std::max(stats.peakQueuedBytes, queuedBytes);
         persistQueue.push_back({std::move(frame)}); lock.unlock(); cv.notify_all(); return true;
     }
     void persistLoop() {
         for (;;) {
             Item item;
-            { std::unique_lock<std::mutex> lock(mutex); cv.wait(lock, [&] { return stopping || !persistQueue.empty(); });
-              if (stopping && persistQueue.empty()) return; item = std::move(persistQueue.front()); persistQueue.pop_front(); persistActive = true; }
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                cv.wait(lock, [&] { return stopping || !persistQueue.empty(); });
+                if (stopping && persistQueue.empty()) return;
+                item = std::move(persistQueue.front());
+                persistQueue.pop_front();
+                persistActive = true;
+            }
             Frame& f = item.frame; fs::path path = framePath(spool, f.taskId, f.frameSeq); bool ok = true, isNew = false; std::error_code ec;
             if (fs::exists(path, ec)) { Frame saved; ok = loadFrame(path, saved) && sameFrame(saved, f); }
             else {
@@ -471,8 +491,14 @@ struct Receiver::Impl {
     void processLoop() {
         for (;;) {
             fs::path path;
-            { std::unique_lock<std::mutex> lock(mutex); cv.wait(lock, [&] { return stopping || !processQueue.empty(); });
-              if (stopping && processQueue.empty()) return; path = processQueue.front(); processQueue.pop_front(); processActive = true; }
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                cv.wait(lock, [&] { return stopping || !processQueue.empty(); });
+                if (stopping && processQueue.empty()) return;
+                path = processQueue.front();
+                processQueue.pop_front();
+                processActive = true;
+            }
             try { Frame f; if (!loadFrame(path, f)) throw std::runtime_error("cannot reload receiver spool"); FrameHandler h; { std::lock_guard<std::mutex> lock(mutex); h = handler; } if (h) h(f); }
             catch (const std::exception& e) { std::lock_guard<std::mutex> lock(mutex); processingFailed = true; error = e.what(); }
             catch (...) { std::lock_guard<std::mutex> lock(mutex); processingFailed = true; error = "frame handler failed"; }
@@ -494,7 +520,9 @@ void Receiver::stop() { impl_->stopNow(); }
 TransferStats Receiver::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->stats; }
 std::string Receiver::lastError() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->error; }
 bool Receiver::serveOne() {
-    if (!impl_->listener.valid()) return false; SocketHandle s = ::accept(impl_->listener.get(), nullptr, nullptr); if (s == kBadSocket) return false;
+    if (!impl_->listener.valid()) return false;
+    SocketHandle s = ::accept(impl_->listener.get(), nullptr, nullptr);
+    if (s == kBadSocket) return false;
     impl_->client.reset(s); { std::lock_guard<std::mutex> lock(impl_->mutex); ++impl_->stats.connections; }
     bool ok = handleClient(); impl_->waitPersistIdle(); impl_->client.close(); return ok;
 }
