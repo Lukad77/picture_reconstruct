@@ -29,6 +29,25 @@ capture_and_network/linux_e2e/runtime/output/weight_map.tif
 capture_and_network/linux_e2e/runtime/output/spot_signals.csv
 ```
 
+Both programs load JSON configuration. From `capture_and_network`, start them
+without repeated positional arguments:
+
+```bash
+./build-linux/linux_reconstruct_receiver
+./build-linux/linux_pipeline_sender
+```
+
+The defaults are `config/receiver.json` and `config/sender.json`. Override them
+with `--config /path/to/file.json` or the
+`PICTURE_RECONSTRUCT_RECEIVER_CONFIG` and
+`PICTURE_RECONSTRUCT_SENDER_CONFIG` environment variables.
+
+To compare synchronous and windowed transfer throughput on the current machine:
+
+```bash
+./build-linux/benchmark_v2_transfer
+```
+
 ## Physical V4L2 camera run
 
 Check the camera first:
@@ -40,15 +59,14 @@ v4l2-ctl --list-devices
 Start the receiver/reconstructor:
 
 ```bash
-./capture_and_network/build-linux/linux_reconstruct_receiver \
-  19090 receiver_spool capture_and_network/linux_e2e/spots_example.csv output 256 256
+cd capture_and_network
+./build-linux/linux_reconstruct_receiver --config config/receiver.json
 ```
 
 Start camera index 0 in another terminal:
 
 ```bash
-./capture_and_network/build-linux/linux_pipeline_sender \
-  RECEIVER_IP 19090 sender_spool capture_and_network/linux_e2e/scan_example.csv 0 640 480 10
+./build-linux/linux_pipeline_sender --config config/sender.v4l2.example.json
 ```
 
 Replace the example CSV files with the real scan positions and calibrated spot
