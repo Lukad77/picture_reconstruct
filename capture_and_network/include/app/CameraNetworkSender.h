@@ -8,8 +8,7 @@
 #include "RawFrame.h"
 #include "FrameBufferPool.h"
 #include "CameraCapture.h"
-#include "TcpClient.h"
-#include "RawFrameSender.h"
+#include "V2Transfer.h"
 
 class CameraNetworkSender {
 public:
@@ -35,8 +34,7 @@ private:
     FrameBufferPool bufferPool_;
 
     CameraCapture camera_;
-    TcpClient tcpClient_;
-    RawFrameSender frameSender_;
+    v2transfer::Sender frameSender_;
 
     std::thread senderThread_;
     std::atomic<bool> running_;

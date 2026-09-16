@@ -1,41 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
-
-project(lan_video_transfer
-    VERSION 0.1.0
-    LANGUAGES CXX
-)
+project(picture_reconstruct_pipeline VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-# 导出 compile_commands.json，方便 clangd / VS Code / Qt Creator 使用
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# -----------------------------
-# Dependencies
-# -----------------------------
-
 find_package(Threads REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
+enable_testing()
 
-# 如果你的 CameraCapture 使用 OpenCV，则启用下面两行
-find_package(OpenCV REQUIRED)
-
-# -----------------------------
-# Core library
-# -----------------------------
-
-add_library(lan_video_core
-    src/common/FrameBufferPool.cpp
-    src/capture/CameraCapture.cpp
-    src/network/TcpClient.cpp
-    src/network/RawFrameSender.cpp
-    src/network/ResumeSession.cpp
-    src/protocol/RawFrameProtocol.cpp
-    src/storage/SenderSpool.cpp
-    src/app/CameraNetworkSender.cpp
-)
-set(LAN_VIDEO_INCLUDE_DIRS
+set(PROJECT_INCLUDE_DIRS
     ${PROJECT_SOURCE_DIR}/include/common
     ${PROJECT_SOURCE_DIR}/include/capture
     ${PROJECT_SOURCE_DIR}/include/network
@@ -44,142 +19,68 @@ set(LAN_VIDEO_INCLUDE_DIRS
     ${PROJECT_SOURCE_DIR}/include/storage
 )
 
-target_include_directories(lan_video_core
-    PUBLIC
-        ${LAN_VIDEO_INCLUDE_DIRS}
+add_library(v2_transfer src/network/V2Transfer.cpp)
+target_include_directories(v2_transfer PUBLIC
+    ${PROJECT_SOURCE_DIR}/include/common
+    ${PROJECT_SOURCE_DIR}/include/network
+    ${PROJECT_SOURCE_DIR}/include/protocol
 )
+target_link_libraries(v2_transfer PUBLIC Threads::Threads)
+if(MSVC)
+    target_compile_options(v2_transfer PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(v2_transfer PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
+add_executable(linux_pipeline_sender apps/client/linux_pipeline_sender.cpp)
+target_include_directories(linux_pipeline_sender PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(linux_pipeline_sender PRIVATE v2_transfer ${OpenCV_LIBS})
 
-target_link_libraries(lan_video_core
-    PUBLIC
-        Threads::Threads
-        ${OpenCV_LIBS}
-)
+add_executable(linux_reconstruct_receiver apps/server/linux_reconstruct_receiver.cpp)
+target_include_directories(linux_reconstruct_receiver PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(linux_reconstruct_receiver PRIVATE v2_transfer ${OpenCV_LIBS})
 
-target_compile_options(lan_video_core
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
+add_executable(v2_receiver apps/server/v2_receiver.cpp)
+target_link_libraries(v2_receiver PRIVATE v2_transfer)
 
-# -----------------------------
-# Client executable
-# -----------------------------
+add_executable(v2_sender apps/client/v2_sender.cpp)
+target_link_libraries(v2_sender PRIVATE v2_transfer)
 
-add_executable(raw_camera_client
-    apps/client/main_client.cpp
-)
+add_executable(test_v2_end_to_end tests/test_v2_end_to_end.cpp)
+target_link_libraries(test_v2_end_to_end PRIVATE v2_transfer)
+add_test(NAME v2_end_to_end COMMAND test_v2_end_to_end)
 
-target_include_directories(raw_camera_client
-    PRIVATE
-        ${LAN_VIDEO_INCLUDE_DIRS}
-)
+option(BUILD_LEGACY_COMPONENTS "Build the pre-V2 camera, protocol, and regression targets" OFF)
+if(BUILD_LEGACY_COMPONENTS)
+    add_library(lan_video_core
+        src/common/FrameBufferPool.cpp
+        src/capture/CameraCapture.cpp
+        src/network/TcpClient.cpp
+        src/network/RawFrameSender.cpp
+        src/network/ResumeSession.cpp
+        src/protocol/RawFrameProtocol.cpp
+        src/storage/SenderSpool.cpp
+        src/app/CameraNetworkSender.cpp
+    )
+    target_include_directories(lan_video_core PUBLIC ${PROJECT_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(lan_video_core PUBLIC Threads::Threads ${OpenCV_LIBS} v2_transfer)
+    if(MSVC)
+        target_compile_options(lan_video_core PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(lan_video_core PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 
-target_link_libraries(raw_camera_client
-    PRIVATE
-        lan_video_core
-)
-
-# -----------------------------
-# Test server executable
-# -----------------------------
-
-add_executable(raw_test_server
-    apps/server/test_server.cpp
-)
-
-target_include_directories(raw_test_server
-    PRIVATE
-        ${LAN_VIDEO_INCLUDE_DIRS}
-)
-
-target_link_libraries(raw_test_server
-    PRIVATE
-        lan_video_core
-)
-
-# -----------------------------
-# Camera test executable
-# -----------------------------
-
-add_executable(test_camera
-    tests/test_camera.cpp
-)
-
-target_include_directories(test_camera
-    PRIVATE
-        ${LAN_VIDEO_INCLUDE_DIRS}
-)
-
-target_link_libraries(test_camera
-    PRIVATE
-        lan_video_core
-)
-
-add_executable(test_sender_spool_resume
-    tests/test_sender_spool_resume.cpp
-)
-
-target_include_directories(test_sender_spool_resume
-    PRIVATE
-        ${LAN_VIDEO_INCLUDE_DIRS}
-        ${PROJECT_SOURCE_DIR}/include/storage
-        ${PROJECT_SOURCE_DIR}/include/network
-)
-
-target_link_libraries(test_sender_spool_resume
-    PRIVATE
-        lan_video_core
-)
-
-add_executable(test_reliable_resume
-    tests/test_reliable_resume.cpp
-)
-
-target_include_directories(test_reliable_resume
-    PRIVATE
-        ${LAN_VIDEO_INCLUDE_DIRS}
-        ${PROJECT_SOURCE_DIR}/include/storage
-        ${PROJECT_SOURCE_DIR}/include/network
-        ${PROJECT_SOURCE_DIR}/include/protocol
-)
-
-target_link_libraries(test_reliable_resume
-    PRIVATE
-        lan_video_core
-)
-
-add_executable(test_phase5_checkpoint
-    tests/test_phase5_checkpoint.cpp
-)
-
-target_include_directories(test_phase5_checkpoint
-    PRIVATE
-        ${LAN_VIDEO_INCLUDE_DIRS}
-        ${PROJECT_SOURCE_DIR}/include/storage
-        ${PROJECT_SOURCE_DIR}/include/network
-        ${PROJECT_SOURCE_DIR}/include/protocol
-)
-
-target_link_libraries(test_phase5_checkpoint
-    PRIVATE
-        lan_video_core
-)
-
-add_executable(test_processing_resume
-    tests/test_processing_resume.cpp
-)
-
-target_include_directories(test_processing_resume
-    PRIVATE
-        ${LAN_VIDEO_INCLUDE_DIRS}
-        ${PROJECT_SOURCE_DIR}/include/storage
-        ${PROJECT_SOURCE_DIR}/include/network
-        ${PROJECT_SOURCE_DIR}/include/protocol
-)
-
-target_link_libraries(test_processing_resume
-    PRIVATE
-        lan_video_core
-)
+    add_executable(raw_camera_client apps/client/main_client.cpp)
+    add_executable(raw_test_server apps/server/test_server.cpp)
+    add_executable(test_camera tests/test_camera.cpp)
+    add_executable(test_sender_spool_resume tests/test_sender_spool_resume.cpp)
+    add_executable(test_reliable_resume tests/test_reliable_resume.cpp)
+    add_executable(test_phase5_checkpoint tests/test_phase5_checkpoint.cpp)
+    add_executable(test_processing_resume tests/test_processing_resume.cpp)
+    foreach(target
+        raw_camera_client raw_test_server test_camera test_sender_spool_resume
+        test_reliable_resume test_phase5_checkpoint test_processing_resume)
+        target_include_directories(${target} PRIVATE ${PROJECT_INCLUDE_DIRS})
+        target_link_libraries(${target} PRIVATE lan_video_core)
+    endforeach()
+endif()

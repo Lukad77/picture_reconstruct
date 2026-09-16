@@ -64,3 +64,6 @@ reconstruct_output/
 frames/
 results/
 output/
+capture_and_network/windows_v2/runtime/
+capture_and_network/build-linux/
+capture_and_network/linux_e2e/runtime/

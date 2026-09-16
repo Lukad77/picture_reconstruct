@@ -52,8 +52,11 @@ void CameraCapture::stop() {
 }
 
 void CameraCapture::captureLoop() {
-    // 关键修改：Ubuntu 下显式使用 V4L2
+#ifdef _WIN32
+    cv::VideoCapture cap(cameraIndex_, cv::CAP_ANY);
+#else
     cv::VideoCapture cap(cameraIndex_, cv::CAP_V4L2);
+#endif
 
     if (!cap.isOpened()) {
         std::cerr << "[CameraCapture] 无法打开摄像头: "

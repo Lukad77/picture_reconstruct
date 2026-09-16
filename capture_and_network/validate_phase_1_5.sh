@@ -17,7 +17,7 @@ LOG_FILE="$ROOT_DIR/validation_log.txt"
   printf '%s\n' ''
   printf '%s\n' '## 2. 验证脚本'
   printf '%s\n' '```bash'
-  printf '%s\n' 'cmake -S . -B build'
+  printf '%s\n' 'cmake -S . -B build -DBUILD_LEGACY_COMPONENTS=ON'
   printf '%s\n' 'cmake --build build -j2'
   printf '%s\n' './build/test_sender_spool_resume'
   printf '%s\n' './build/test_reliable_resume'
@@ -29,7 +29,7 @@ LOG_FILE="$ROOT_DIR/validation_log.txt"
   printf '%s\n' '## 3. 编译与构建'
   cd "$ROOT_DIR"
   printf '%s\n' '```bash'
-  cmake -S . -B build
+  cmake -S . -B build -DBUILD_LEGACY_COMPONENTS=ON
   printf '%s\n' '---'
   cmake --build build -j2
   printf '%s\n' '```'

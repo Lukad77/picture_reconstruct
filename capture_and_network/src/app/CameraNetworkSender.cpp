@@ -1,6 +1,7 @@
 #include "CameraNetworkSender.h"
 
 #include <iostream>
+#include <chrono>
 
 CameraNetworkSender::CameraNetworkSender(
     int cameraIndex,
@@ -10,8 +11,7 @@ CameraNetworkSender::CameraNetworkSender(
     : queue_(10),
       bufferPool_(1920 * 1080 * 3, 16),
       camera_(cameraIndex, queue_, bufferPool_),
-      tcpClient_(serverIp, serverPort),
-      frameSender_(tcpClient_),
+      frameSender_(serverIp, static_cast<uint16_t>(serverPort), "sender_spool", 1),
       running_(false) {}
 
 CameraNetworkSender::~CameraNetworkSender() {
@@ -23,7 +23,7 @@ void CameraNetworkSender::setCameraConfig(int width, int height, int fps) {
 }
 
 void CameraNetworkSender::setFragmentSize(uint32_t fragmentSize) {
-    frameSender_.setFragmentSize(fragmentSize);
+    (void)fragmentSize; // Protocol V2 uses the fixed 64 KiB chunk size.
 }
 
 bool CameraNetworkSender::start() {
@@ -31,7 +31,9 @@ bool CameraNetworkSender::start() {
         return true;
     }
 
-    if (!tcpClient_.connectToServer()) {
+    if (!frameSender_.resume()) {
+        std::cerr << "[CameraNetworkSender] V2 resume failed: "
+                  << frameSender_.lastError() << std::endl;
         return false;
     }
 
@@ -39,7 +41,6 @@ bool CameraNetworkSender::start() {
 
     if (!camera_.start()) {
         running_ = false;
-        tcpClient_.closeConnection();
         return false;
     }
 
@@ -64,8 +65,6 @@ void CameraNetworkSender::stop() {
         senderThread_.join();
     }
 
-    tcpClient_.closeConnection();
-
     std::cout << "[CameraNetworkSender] 已停止" << std::endl;
 }
 
@@ -79,14 +78,13 @@ void CameraNetworkSender::sendLoop() {
             break;
         }
 
-        if (!tcpClient_.isConnected()) {
-            std::cerr << "[CameraNetworkSender] TCP 连接已断开" << std::endl;
-            break;
-        }
-
-        if (!frameSender_.sendFrame(frame)) {
-            std::cerr << "[CameraNetworkSender] 发送原始帧失败" << std::endl;
-            break;
+        auto outgoing = v2transfer::fromRawFrame(frame, 1);
+        outgoing.frameSeq = frameSender_.nextFrameSeq();
+        outgoing.frameIndex = static_cast<uint32_t>(outgoing.frameSeq - 1);
+        while (running_ && !frameSender_.send(outgoing)) {
+            std::cerr << "[CameraNetworkSender] V2 发送失败，帧已保留在 spool: "
+                      << frameSender_.lastError() << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
 
