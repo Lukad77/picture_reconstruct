@@ -69,11 +69,13 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 5; ++i) camera.read(warmup);
         }
 
+        // Sender 内部会把所有帧先写入 spool，再开始网络发送。
         v2transfer::Sender sender(host, port, spool, 1);
         if (!sender.resume()) throw std::runtime_error("initial resume failed: " + sender.lastError());
         const uint64_t firstSeq = sender.nextFrameSeq();
         for (size_t index = static_cast<size_t>(firstSeq - 1); index < positions.size(); ++index) {
             cv::Mat image;
+            // cameraIndex >= 0 使用 V4L2；-1 使用可复现的合成图像。
             if (cameraIndex >= 0) {
                 if (!camera.read(image) || image.empty()) throw std::runtime_error("camera returned an empty frame");
             } else {
@@ -94,6 +96,7 @@ int main(int argc, char** argv) {
             frame.elemSize = static_cast<uint32_t>(image.elemSize());
             const size_t bytes = image.total() * image.elemSize();
             frame.pixels.assign(image.data, image.data + bytes);
+            // send 返回成功表示 receiver 已持久化并 ACK 了这一帧。
             if (!sender.send(frame)) throw std::runtime_error("frame send failed: " + sender.lastError());
             std::cout << "ACK frame=" << frame.frameSeq << " stage=(" << frame.stageX << ',' << frame.stageY << ")\n";
             if (fps > 0 && cameraIndex < 0) std::this_thread::sleep_for(std::chrono::milliseconds(1000 / fps));

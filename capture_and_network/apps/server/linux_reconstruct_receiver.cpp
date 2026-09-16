@@ -136,6 +136,7 @@ int main(int argc, char** argv) {
         const uint16_t port = static_cast<uint16_t>(std::stoi(argv[1]));
         const fs::path spool = argv[2];
         Reconstructor reconstructor(readSpots(argv[3]), std::stoi(argv[5]), std::stoi(argv[6]), argv[4]);
+        // 先重放 receiver spool 中已有的完整帧，支持 receiver 重启后继续出图。
         const fs::path taskDir = spool / "1";
         std::error_code ec;
         if (fs::exists(taskDir, ec)) for (const auto& entry : fs::directory_iterator(taskDir)) {
@@ -144,8 +145,10 @@ int main(int argc, char** argv) {
             if (!v2transfer::loadFrame(entry.path(), saved)) throw std::runtime_error("corrupt receiver spool: " + entry.path().string());
             reconstructor.consume(saved);
         }
+        // Receiver 负责协议、校验、持久化；本程序只提供重构回调。
         v2transfer::Receiver receiver(port, spool);
         receiver.setFrameHandler([&](const v2transfer::Frame& frame) { reconstructor.consume(frame); });
+        // TaskFinish 到达后写出最终 TIFF 和 spot 信号 CSV。
         receiver.setFinishHandler([&](uint64_t) { reconstructor.save(); });
         std::cout << "waiting for Protocol V2 sender on port " << port << '\n';
         if (!receiver.serveUntilFinished()) throw std::runtime_error("receiver stopped before TaskFinish: " + receiver.lastError());
